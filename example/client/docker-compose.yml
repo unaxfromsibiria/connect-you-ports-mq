@@ -1,0 +1,29 @@
+services:
+  connection-port-local:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      RUST_LOG: "info"
+      SERVER: "0"
+      LOADING_LEVEL: "high"
+      CLIENT_NAME: "dev1"
+      WORKERS: "4"
+      TCP_SOCKETS: "web-api:0.0.0.0:7128;iperf-tcp:0.0.0.0:5501"
+      UDP_SOCKETS: "dns:0.0.0.0:5533;iperf-udp:0.0.0.0:5500"
+      CRYPTO_KEY: "<EDIT: set the same key value from server>"
+      BROKER_PASSWORD: "<EDIT: set in server>"
+      BROKER_HOST: "<EDIT: your server>"
+      BROKER_USER: connection
+
+    ports:
+      - "7128:7128/tcp"  # curl -x http://127.0.0.1:7128 https://docs.rs/
+      - "9091:5501/tcp"  # iperf -p 9091 -c 127.0.0.1 
+      - "9092:5500/udp"  # iperf -u -p 9092 -c 127.0.0.1 
+      - "5533:5533/udp"  # nslookup -port=5533 google.com 127.0.0.1
+    healthcheck:
+      test: ["CMD-SHELL", "pidof connect-you-ports-mq || pidof iperf | xargs kill"]
+      interval: 15s
+      timeout: 1s
+      retries: 1
+    restart: always

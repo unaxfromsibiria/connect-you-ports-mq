@@ -1,0 +1,55 @@
+services:
+  connection-ports:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      RUST_LOG: "info"
+      SERVER: "1"
+      WORKERS: "4"
+      LOADING_LEVEL: "high"
+      CLIENT_NAME: "devserver1"
+      CLIENTS: "dev1"
+      CRYPTO_KEY: "<EDIT: set key value>"
+      SERVER_TCP_TARGET: "web-api:10.6.5.15:3128;iperf-tcp:10.6.5.20:9091"
+      SERVER_UDP_TARGET: "dns:8.8.8.8:53;iperf-udp:10.6.5.20:9092"
+      BROKER_PASSWORD: "<EDIT: set in server>"
+      BROKER_HOST: "10.6.5.13"
+      BROKER_USER: connection
+    depends_on:
+      - mqtt-server
+    networks:
+      private_net:
+        ipv4_address: 10.6.5.20
+    healthcheck:
+      test: ["CMD-SHELL", "pidof connect-you-ports-mq || pidof iperf | xargs kill"]
+      interval: 15s
+      timeout: 1s
+      retries: 1
+    restart: always
+
+  squid-api:
+    image: ubuntu/squid
+    restart: unless-stopped
+    networks:
+      private_net:
+        ipv4_address: 10.6.5.15
+
+  mqtt-server:
+    build:
+      context: .
+      dockerfile: mosquitto.Dockerfile
+    ports:
+      - "1883:1883/tcp"
+    volumes:
+      - ".mqtt_pass:/mosquitto/config/host/"
+    networks:
+      private_net:
+        ipv4_address: 10.6.5.13
+
+networks:
+  private_net:
+    ipam:
+      driver: default
+      config:
+        - subnet: 10.6.5.0/24
