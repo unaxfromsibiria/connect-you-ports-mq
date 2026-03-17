@@ -17,6 +17,8 @@ use stat::{Stat, StatManage};
 use std::time::Duration;
 use std::sync::Arc;
 use std::collections::HashMap;
+use futures::StreamExt;
+use paho_mqtt as mqtt;
 use log::{info, warn, error, debug};
 use tokio::io::{ReadHalf, WriteHalf};
 use tokio::sync::mpsc;
@@ -25,7 +27,6 @@ use tokio::time::sleep;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::RwLock;
 use tokio::net::{TcpListener, TcpStream, UdpSocket};
-use rumqttc::{AsyncClient, Event, Incoming};
 
 /// Processes service transport for TCP connections or UDP transfering
 async fn processing_service_transport(
@@ -50,12 +51,22 @@ async fn processing_service_transport(
     let connection_name = format!(
         "{}-{}-{}", settings.client_name, if is_tcp {"t"} else {"u"}, service_code
     );
-    let mqtt_options = settings.make_mqtt_options(&connection_name);
-    let (client, mut eventloop) = AsyncClient::new(mqtt_options, cap * 2);
+    let (create_opts, conn_opts) = settings.make_mqtt_options(&connection_name);
     let mut chunk: DataChunk = DataChunk::new();
     let topic = server_data_topic(is_tcp, &service_code);
     let server_topic = client_data_topic(is_tcp, &service_code);
     let qos = settings.qos_level();
+    let mut client = mqtt::AsyncClient::new(create_opts).expect("Error creating the async MQTT client");
+
+    match client.connect(conn_opts).await {
+        Ok(_) => {
+            info!("MQTT client connected");
+        },
+        Err(err) => {
+            error!("MQTT connection error: {}", err);
+            return;
+        }
+    }
     match client.subscribe(&server_topic, qos).await {
         Ok(_) => {
             info!("Waiting for messages from '{}' in {} connection {}", server_topic, serv, connection_name);
@@ -68,6 +79,7 @@ async fn processing_service_transport(
         }
     }
     let (mut raw_bytes, mut msg_bytes, mut error_count) = (0, 0, 0);
+    let mut stream = client.get_stream(cap);
 
     loop {
         tokio::select! {
@@ -93,9 +105,11 @@ async fn processing_service_transport(
                 if chunk_size > warn_size {
                     warn!("Too many messages in chunk with {} bytes in service {}", n, serv);
                 }
-                match client.publish(&topic, qos, false, payload).await {
+                let out_msg = mqtt::Message::new(&topic, payload, qos);
+                match client.publish(out_msg).await {
                     Ok(_) => {
                         msg_bytes = n;
+                        debug!("sending to '{}'", topic);
                     },
                     Err(err) => {
                         error!("Problem sending data in {}: {}", serv, err);
@@ -103,39 +117,38 @@ async fn processing_service_transport(
                     }
                 }
             },
-            notification = eventloop.poll() => {
-                match notification {
-                    Ok(event) => {
+            Some(msg_opt) = stream.next() => {
+                match msg_opt {
+                    Some(new_msg) => {
                         let mut count_messages = 0;
-                        if let Event::Incoming(Incoming::Publish(publish)) = event {
-                            let payload = publish.payload;
-                            let new_chunk: DataChunk = data_handler.load_data_message(&payload);
-                            if !new_chunk.e.is_empty() {
-                                error!("Server reported error: {}", new_chunk.e);
-                                continue;
-                            }
-                            let mut routing = routing_arc.write().await;
-                            for msg in new_chunk.set.iter() {
-                                let client = msg.c_id.clone();
-                                count_messages += 1;
-                                if msg.x {
-                                    info!("Server requested {} to close connection", client);
-                                    routing.send_quit(&client).await;
-                                } else {
-                                    routing.send_data(&client, &msg.d).await;
-                                }
+                        let payload = new_msg.payload();
+                        let new_chunk: DataChunk = data_handler.load_data_message(&payload);
+                        if !new_chunk.e.is_empty() {
+                            error!("Server reported error: {}", new_chunk.e);
+                            continue;
+                        }
+                        let mut routing = routing_arc.write().await;
+                        for msg in new_chunk.set.iter() {
+                            let client = msg.c_id.clone();
+                            count_messages += 1;
+                            if msg.x {
+                                info!("Server requested {} to close connection", client);
+                                routing.send_quit(&client).await;
+                            } else {
+                                routing.send_data(&client, &msg.d).await;
                             }
                         }
                         if count_messages > 0 {
                             debug!("Processed chunk with {} messages", count_messages);
                         }
                     },
-                    Err(err) => {
-                        error!("MQTT event critical error: {}", err);
-                        std::process::exit(1);
+                    None => {
+                        error!("MQTT event critical error: non payload message");
+                        break;
                     },
                 }
             }
+
         }
         if error_count + raw_bytes + msg_bytes > 0 {
             let mut stat_update = stat.write().await;

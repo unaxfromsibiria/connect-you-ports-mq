@@ -7,11 +7,11 @@ use common::{Settings, TOPIC_NAME_DATA_CLIENT, TOPIC_NAME_DATA_SERVER};
 use aes_gcm::{Aes256Gcm, Nonce, Key, aead::{Aead, AeadCore, KeyInit, OsRng}};
 
 pub fn client_data_topic(is_tcp: bool, service_code: &str) -> String {
-    format!("t{}-{}-{}", if is_tcp {"t"} else {"u"}, TOPIC_NAME_DATA_SERVER, service_code)
+    format!("i{}-{}-{}", if is_tcp {"t"} else {"u"}, TOPIC_NAME_DATA_SERVER, service_code)
 }
 
 pub fn server_data_topic(is_tcp: bool, service_code: &str) -> String {
-    format!("t{}-{}-{}", if is_tcp {"t"} else {"u"}, TOPIC_NAME_DATA_CLIENT, service_code)
+    format!("s{}-{}-{}", if is_tcp {"t"} else {"u"}, TOPIC_NAME_DATA_CLIENT, service_code)
 }
 
 

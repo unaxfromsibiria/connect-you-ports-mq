@@ -5,14 +5,15 @@ use std::collections::HashMap;
 use std::net::IpAddr;
 use std::sync::Arc;
 use uuid::Uuid;
-use rand;
+use chrono::{Utc, DateTime};
 use sha1::{Sha1, Digest};
 use log::{debug, warn, info};
 use tokio::sync::mpsc;
 use tokio::sync::RwLock;
 use tokio::time::{sleep, Duration};
-use chrono::{Utc, DateTime};
-use rumqttc::{MqttOptions, QoS};
+use paho_mqtt as mqtt;
+use paho_mqtt::types::{QOS_0, QOS_1, QOS_2};
+use rand;
 
 // env variables
 const ENV_IS_SERVER: &str = "SERVER";
@@ -238,9 +239,9 @@ pub trait LoadingParams {
     fn channel_size(&self) -> (usize, usize);
     fn collect_message_timeout(&self) -> Duration;
     fn chunk_size_warning(&self) -> usize;
-    fn qos_level(&self) -> QoS;
+    fn qos_level(&self) -> i32;
     fn check_time(&self) -> Duration;
-    fn make_mqtt_options(&self, connection_name: &str) -> MqttOptions;
+    fn make_mqtt_options(&self, connection_name: &str) -> (mqtt::CreateOptions, mqtt::ConnectOptions);
     fn default_buffer_size(&self) -> usize;
 }
 
@@ -269,9 +270,9 @@ impl LoadingParams for Settings {
     /// Returns the timeout duration for collecting messages based on the loading level
     fn collect_message_timeout(&self) -> Duration {
         let ms = match self.loading_level {
-            LoadingLevelEnum::Default => 8,
+            LoadingLevelEnum::Default => 10,
             LoadingLevelEnum::High => 8,
-            LoadingLevelEnum::Extremely => 6,
+            LoadingLevelEnum::Extremely => 8,
             LoadingLevelEnum::Low => 16,
         };
         Duration::from_millis(ms)
@@ -288,38 +289,30 @@ impl LoadingParams for Settings {
     }
 
     /// Creates MQTT options configured based on the loading level
-    fn make_mqtt_options(&self, connection_name: &str) -> MqttOptions {
-        let mut mqtt_options = MqttOptions::new(
-            connection_name, &self.broker_host, self.broker_port
-        );
+    fn make_mqtt_options(&self, connection_name: &str) -> (mqtt::CreateOptions, mqtt::ConnectOptions) {
         let k_alive = {
-            let min = match self.loading_level {
-                LoadingLevelEnum::Default => 10,
-                LoadingLevelEnum::High => 15,
+            let val = match self.loading_level {
+                LoadingLevelEnum::Default => 20,
+                LoadingLevelEnum::High => 30,
                 LoadingLevelEnum::Extremely => 30,
-                LoadingLevelEnum::Low => 5,
+                LoadingLevelEnum::Low => 25,
             };
-            Duration::from_secs(min * 60)
+            Duration::from_secs(val)
         };
-        mqtt_options.set_keep_alive(k_alive);
-        if !self.broker_user.is_empty() {
-            mqtt_options.set_credentials(&self.broker_user, &self.broker_password);
-        }
-        let mb_size = match self.loading_level {
-            LoadingLevelEnum::Default => 196,
-            LoadingLevelEnum::High => 196,
-            LoadingLevelEnum::Extremely => 224,
-            LoadingLevelEnum::Low => 128,
-        } * 1024 * 1024;
-        mqtt_options.set_max_packet_size(mb_size, mb_size);
-        let cap = match self.loading_level {
-            LoadingLevelEnum::Default => 1024,
-            LoadingLevelEnum::High => 1024,
-            LoadingLevelEnum::Extremely => 1024 * 4,
-            LoadingLevelEnum::Low => 32,
-        };
-        mqtt_options.set_request_channel_capacity(cap);
-        mqtt_options
+        let create_opts = mqtt::CreateOptionsBuilder::new().server_uri(
+            format!("tcp://{}:{}", self.broker_host, self.broker_port)
+        ).client_id(
+            connection_name
+        ).finalize();
+
+         let conn_opts = mqtt::ConnectOptionsBuilder::new().keep_alive_interval(
+            k_alive
+        ).clean_session(true).user_name(
+            self.broker_user.clone()
+        ).password(
+            self.broker_password.clone()
+        ).finalize();
+        (create_opts, conn_opts)
     }
 
     /// Returns the check interval duration (2 sec with random ~500ms)
@@ -328,13 +321,13 @@ impl LoadingParams for Settings {
     }
 
     /// Returns the QoS level based on broker configuration
-    fn qos_level(&self) -> QoS {
+    fn qos_level(&self) -> i32 {
         if self.broker_qos == 1 {
-            QoS::AtMostOnce
+            QOS_1
         } else if self.broker_qos == 2 {
-            QoS::ExactlyOnce
+            QOS_2
         } else {
-            QoS::AtLeastOnce
+            QOS_0
         }
     }
 }

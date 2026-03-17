@@ -1,6 +1,6 @@
 FROM rust:1.93
 RUN apt update
-RUN apt install -y openssl build-essential libssl-dev curl iperf bash
+RUN apt install -y openssl build-essential libssl-dev curl iperf bash cmake
 
 WORKDIR /usr/src/connection-service
 COPY . .
