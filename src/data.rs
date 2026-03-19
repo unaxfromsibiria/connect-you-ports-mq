@@ -25,6 +25,11 @@ pub struct DataMsg {
     pub n: Vec<u8>,
 }
 
+#[derive(Clone)]
+pub struct DataHandlerSettings {
+    cipher: Option<Aes256Gcm>,
+    encryption: bool,
+}
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct DataChunk {
@@ -32,17 +37,12 @@ pub struct DataChunk {
     pub e: String,
 }
 
-
-#[derive(Clone)]
-pub struct DataHandlerSettings {
-    cipher: Option<Aes256Gcm>,
-    encryption: bool,
-}
-
 pub trait DataMessageFormater {
     fn new() -> Self;
     fn dump(&self) -> Vec<u8>;
     fn data_size(&self) -> usize;
+    fn len(&self) -> usize;
+    fn extract_slice(&mut self, size: usize) -> Self;
 }
 
 impl DataMessageFormater for DataChunk {
@@ -53,12 +53,26 @@ impl DataMessageFormater for DataChunk {
         let serialized = bincode::serialize(&self).unwrap();
         serialized
     }
+    fn len(&self) -> usize {
+        self.set.len()
+    }
     fn data_size(&self) -> usize {
         let mut res = 0;
         for msg in self.set.iter() {
             res += msg.d.len();
         }
         res
+    }
+    fn extract_slice(&mut self, size: usize) -> DataChunk {
+        let take_count = std::cmp::min(size, self.set.len());
+        DataChunk {
+            e: self.e.clone(),
+            set: if take_count == 0 {
+                Vec::new()
+            } else {
+                self.set.splice(0..take_count, []).collect()
+            },
+        }
     }
 }
 

@@ -37,7 +37,7 @@ async fn handle_stat(settings: &Settings, stat: Arc<RwLock<Stat>>, tasks: &mut J
 /// Monitors service health by publishing and checking messages on MQTT topic
 /// Restarts application if connection issues are detected
 async fn handle_checking(settings: &Settings, tasks: &mut JoinSet<()>) {
-    let (_, cap) = settings.channel_size();
+    let cap = settings.stream_capacity();
     let connection_name = format!("{}-v", settings.client_name);
     let (create_opts, conn_opts) = settings.make_mqtt_options(&connection_name);
     let settings = settings.clone();

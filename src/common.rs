@@ -243,6 +243,8 @@ pub trait LoadingParams {
     fn check_time(&self) -> Duration;
     fn make_mqtt_options(&self, connection_name: &str) -> (mqtt::CreateOptions, mqtt::ConnectOptions);
     fn default_buffer_size(&self) -> usize;
+    fn stream_capacity(&self) -> usize;
+    fn service_delay(&self) -> Duration;
 }
 
 /// Provides configuration parameters based on the loading level
@@ -257,6 +259,17 @@ impl LoadingParams for Settings {
         }
     }
 
+    /// Returns the stream capacity based on the loading level
+    /// Higher loading levels result in larger stream capacities to handle more concurrent data.
+    fn stream_capacity(&self) -> usize {
+        match self.loading_level {
+            LoadingLevelEnum::Default => 32,
+            LoadingLevelEnum::High => 128,
+            LoadingLevelEnum::Extremely => 196,
+            LoadingLevelEnum::Low => 24
+        }
+    }
+
     /// Returns the channel size configuration based on the loading level
     fn channel_size(&self) -> (usize, usize) {
         match self.loading_level {
@@ -267,13 +280,24 @@ impl LoadingParams for Settings {
         }
     }
 
+    /// Minimal pause value for network operations
+    fn service_delay(&self) -> Duration {
+        let ms = match self.loading_level {
+            LoadingLevelEnum::Default => 2,
+            LoadingLevelEnum::High => 1,
+            LoadingLevelEnum::Extremely => 1,
+            LoadingLevelEnum::Low => 5,
+        };
+        Duration::from_millis(ms)
+    }
+
     /// Returns the timeout duration for collecting messages based on the loading level
     fn collect_message_timeout(&self) -> Duration {
         let ms = match self.loading_level {
-            LoadingLevelEnum::Default => 10,
-            LoadingLevelEnum::High => 8,
+            LoadingLevelEnum::Default => 12,
+            LoadingLevelEnum::High => 10,
             LoadingLevelEnum::Extremely => 8,
-            LoadingLevelEnum::Low => 16,
+            LoadingLevelEnum::Low => 15,
         };
         Duration::from_millis(ms)
     }
@@ -281,10 +305,10 @@ impl LoadingParams for Settings {
     /// Returns the chunk size warning threshold based on the loading level
     fn chunk_size_warning(&self) -> usize {
         match self.loading_level {
-            LoadingLevelEnum::Default => 500,
-            LoadingLevelEnum::High => 1000,
-            LoadingLevelEnum::Extremely => 2500,
-            LoadingLevelEnum::Low => 100,
+            LoadingLevelEnum::Default => 50,
+            LoadingLevelEnum::High => 100,
+            LoadingLevelEnum::Extremely => 120,
+            LoadingLevelEnum::Low => 30,
         }
     }
 

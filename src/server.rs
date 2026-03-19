@@ -297,7 +297,7 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
     let arc_stat = stat.clone();
 
     tasks.spawn(async move {
-        let (cap, _) = settings.channel_size();
+        let cap = settings.stream_capacity();
         let qos = settings.qos_level();
         let (create_opts, conn_opts) = settings.make_mqtt_options(&connection_name);
         let mut client = mqtt::AsyncClient::new(create_opts).expect("Error creating the async MQTT client");
@@ -478,7 +478,7 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
     let arc_stat = stat.clone();
 
     tasks.spawn(async move {
-        let (cap, _) = settings.channel_size();
+        let cap = settings.stream_capacity();
         let qos = settings.qos_level();
         let delay = settings.collect_message_timeout();
         let (create_opts, conn_opts) = settings.make_mqtt_options(&connection_name);

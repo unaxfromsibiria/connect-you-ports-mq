@@ -40,7 +40,7 @@ async fn processing_service_transport(
 ) {
     let serv = format!("{} ({})", service_name, service_code);
     info!("Starting {} service {}", if is_tcp {"TCP"} else {"UDP"}, serv);
-    let (cap, _) = settings.channel_size();
+    let cap = settings.stream_capacity();
     let send_interval = settings.collect_message_timeout();
     let warn_size = settings.chunk_size_warning();
     let mut data_handler = DataHandlerSettings::new();
@@ -53,6 +53,7 @@ async fn processing_service_transport(
     );
     let (create_opts, conn_opts) = settings.make_mqtt_options(&connection_name);
     let mut chunk: DataChunk = DataChunk::new();
+    let service_delay = settings.service_delay();
     let topic = server_data_topic(is_tcp, &service_code);
     let server_topic = client_data_topic(is_tcp, &service_code);
     let qos = settings.qos_level();
@@ -97,18 +98,38 @@ async fn processing_service_transport(
                     continue;
                 }
                 raw_bytes = chunk.data_size();
-                let payload = chunk.dump();
-                let chunk_size = chunk.set.len();
-                chunk.set.clear();
+                let chunk_size = chunk.len();
                 chunk.e = "".to_string();
-                let n = payload.len();
                 if chunk_size > warn_size {
-                    warn!("Too many messages in chunk with {} bytes in service {}", n, serv);
+                    warn!("Too many messages in chunk with {} messages in service {}", chunk_size, serv);
+                    loop {
+                        if chunk.len() <= warn_size {
+                            break;
+                        }
+                        let part_chunk = chunk.extract_slice(warn_size);
+                        let payload = part_chunk.dump();
+                        let n = payload.len();
+                        let out_msg = mqtt::Message::new(&topic, payload, qos);
+                        match client.publish(out_msg).await {
+                            Ok(_) => {
+                                msg_bytes += n;
+                                debug!("sending to '{}'", topic);
+                            },
+                            Err(err) => {
+                                error!("Problem sending data in {}: {}", serv, err);
+                                error_count += 1;
+                            }
+                        }
+                        sleep(service_delay).await;
+                    }
                 }
+                let payload = chunk.dump();
+                let n = payload.len();
+                chunk.set.clear();
                 let out_msg = mqtt::Message::new(&topic, payload, qos);
                 match client.publish(out_msg).await {
                     Ok(_) => {
-                        msg_bytes = n;
+                        msg_bytes += n;
                         debug!("sending to '{}'", topic);
                     },
                     Err(err) => {
