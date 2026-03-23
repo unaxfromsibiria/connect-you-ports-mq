@@ -14,9 +14,10 @@ use common::{
 };
 use data::{client_data_topic, server_data_topic, DataHandlerSettings, DataHandler, DataChunk};
 use stat::{Stat, StatManage};
+use std::collections::HashSet;
+use std::collections::HashMap;
 use std::time::Duration;
 use std::sync::Arc;
-use std::collections::HashMap;
 use futures::StreamExt;
 use paho_mqtt as mqtt;
 use log::{info, warn, error, debug};
@@ -149,15 +150,19 @@ async fn processing_service_transport(
                             continue;
                         }
                         let mut routing = routing_arc.write().await;
+                        let mut to_close_clients = HashSet::new();
                         for msg in new_chunk.set.iter() {
                             let client = msg.c_id.clone();
                             count_messages += 1;
                             if msg.x {
                                 info!("Server requested {} to close connection", client);
-                                routing.send_quit(&client).await;
+                                to_close_clients.insert(client);
                             } else {
                                 routing.send_data(&client, &msg.d).await;
                             }
+                        }
+                        for client in to_close_clients.iter() {
+                            routing.send_quit(&client).await;
                         }
                         if count_messages > 0 {
                             debug!("Processed chunk with {} messages", count_messages);

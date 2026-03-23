@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::common;
 
 use log::{info, error};
@@ -172,5 +174,50 @@ impl DataHandler for DataHandlerSettings {
             },
             Err(err) => DataChunk {set: [].to_vec(), e: err.to_string()},
         }
+    }
+}
+
+#[derive(Clone)]
+pub struct TargetChunks {
+    pub targets: HashMap<String, DataChunk>
+}
+
+pub trait ChunkTopic {
+    fn new() -> Self;
+    fn add_data(&mut self, topic: &str, msg: DataMsg);
+    fn extract_slice(&mut self, size: usize) -> (String, DataChunk);
+}
+
+impl ChunkTopic for TargetChunks {
+    fn new() -> Self {
+        TargetChunks {
+            targets: HashMap::new(),
+        }
+    }
+
+    fn add_data(&mut self, topic: &str, msg: DataMsg) {
+        let chunk = self.targets
+            .entry(topic.to_string())
+            .or_insert_with(|| DataChunk {
+                e: String::new(),
+                set: Vec::new(),
+            });
+        
+        chunk.set.push(msg);
+    }
+
+    fn extract_slice(&mut self, size: usize) -> (String, DataChunk) {
+        for (topic, chunk) in self.targets.iter_mut() {
+            if !chunk.set.is_empty() {
+                let extracted_chunk = chunk.extract_slice(size);
+                if extracted_chunk.set.is_empty() {
+                    continue;
+                }
+                return (topic.clone(), extracted_chunk);
+            }
+        }
+        let mut empty_chunk = DataChunk::new();
+        empty_chunk.e = String::new();
+        ("".to_string(), empty_chunk)
     }
 }

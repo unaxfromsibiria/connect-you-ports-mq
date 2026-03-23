@@ -238,6 +238,7 @@ pub fn code_name(value: &str) -> String {
 pub trait LoadingParams {
     fn channel_size(&self) -> (usize, usize);
     fn collect_message_timeout(&self) -> Duration;
+    fn chunk_output_size(&self) -> usize;
     fn chunk_size_warning(&self) -> usize;
     fn qos_level(&self) -> i32;
     fn check_time(&self) -> Duration;
@@ -254,7 +255,7 @@ impl LoadingParams for Settings {
         match self.loading_level {
             LoadingLevelEnum::Default => 4 * 1024,
             LoadingLevelEnum::High => 8 * 1024,
-            LoadingLevelEnum::Extremely => 16 * 1024,
+            LoadingLevelEnum::Extremely => 8 * 1024,
             LoadingLevelEnum::Low => 4 * 1024
         }
     }
@@ -263,20 +264,20 @@ impl LoadingParams for Settings {
     /// Higher loading levels result in larger stream capacities to handle more concurrent data.
     fn stream_capacity(&self) -> usize {
         match self.loading_level {
-            LoadingLevelEnum::Default => 32,
-            LoadingLevelEnum::High => 128,
-            LoadingLevelEnum::Extremely => 196,
-            LoadingLevelEnum::Low => 24
+            LoadingLevelEnum::Default => 400,
+            LoadingLevelEnum::High => 600,
+            LoadingLevelEnum::Extremely => 1000,
+            LoadingLevelEnum::Low => 100
         }
     }
 
     /// Returns the channel size configuration based on the loading level
     fn channel_size(&self) -> (usize, usize) {
         match self.loading_level {
-            LoadingLevelEnum::Default => (1024 * 8, 1024 * 4),
-            LoadingLevelEnum::High => (1024 * 10, 1024 * 8),
-            LoadingLevelEnum::Extremely => (1024 * 16, 1024 * 12),
-            LoadingLevelEnum::Low => (1024, 1024),
+            LoadingLevelEnum::Default => (1024 * 10, 1024 * 6),
+            LoadingLevelEnum::High => (1024 * 12, 1024 * 8),
+            LoadingLevelEnum::Extremely => (1024 * 20, 1024 * 12),
+            LoadingLevelEnum::Low => (1024 * 4, 1024 * 2),
         }
     }
 
@@ -294,10 +295,10 @@ impl LoadingParams for Settings {
     /// Returns the timeout duration for collecting messages based on the loading level
     fn collect_message_timeout(&self) -> Duration {
         let ms = match self.loading_level {
-            LoadingLevelEnum::Default => 12,
+            LoadingLevelEnum::Default => 15,
             LoadingLevelEnum::High => 10,
             LoadingLevelEnum::Extremely => 8,
-            LoadingLevelEnum::Low => 15,
+            LoadingLevelEnum::Low => 18,
         };
         Duration::from_millis(ms)
     }
@@ -309,6 +310,16 @@ impl LoadingParams for Settings {
             LoadingLevelEnum::High => 100,
             LoadingLevelEnum::Extremely => 120,
             LoadingLevelEnum::Low => 30,
+        }
+    }
+
+    /// Returns the output buffer size for chunks based on the loading level
+    fn chunk_output_size(&self) -> usize {
+        match self.loading_level {
+            LoadingLevelEnum::Default => 100,
+            LoadingLevelEnum::High => 120,
+            LoadingLevelEnum::Extremely => 150,
+            LoadingLevelEnum::Low => 50,
         }
     }
 

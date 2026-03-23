@@ -3,7 +3,16 @@ use crate::stat;
 use crate::data;
 
 use common::{Settings, code_name, LoadingParams, RoutingManager, RoutingState, clear_routing};
-use data::{server_data_topic, client_data_topic, DataHandlerSettings, DataHandler, DataChunk, DataMessageFormater};
+use data::{
+    server_data_topic,
+    client_data_topic,
+    DataHandlerSettings,
+    DataHandler,
+    DataChunk,
+    DataMessageFormater,
+    TargetChunks,
+    ChunkTopic,
+};
 use stat::{Stat, StatManage};
 use log::{info, warn, error, debug};
 use futures::StreamExt;
@@ -337,6 +346,11 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
 
         let mut stream = client.get_stream(cap);
         let (mut raw_bytes, mut msg_bytes, mut error_count) = (0, 0, 0);
+        let mut chunks = TargetChunks::new();
+        let send_delay = settings.collect_message_timeout();
+        let service_delay = settings.service_delay();
+        let chunk_size = settings.chunk_output_size();
+
         loop {
             if error_count + raw_bytes + msg_bytes > 0 {
                 let mut stat_update = arc_stat.write().await;
@@ -410,25 +424,36 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
                         },
                     }
                 },
+                _ = sleep(send_delay) => {
+                    loop {
+                        let (cl_topic, chunk) = chunks.extract_slice(chunk_size);
+                        if cl_topic.is_empty() || chunk.len() < 1 {
+                            sleep(service_delay).await;
+                            break;
+                        }
+                        let payload = chunk.dump();
+                        msg_bytes += payload.len();
+                        let out_msg = mqtt::Message::new(&cl_topic, payload, qos);
+                        match client.publish(out_msg).await {
+                            Ok(_) => {
+                                raw_bytes += chunk.data_size();
+                            },
+                            Err(err) => {
+                                error!("Problem sending TCP data in {}: {}", cl_topic, err);
+                                sleep(service_delay).await;
+                                error_count += 1;
+                                break;
+                            }
+                        }
+                    }
+                },
                 Some((client_id, service_code, data, cl_topic)) = data_out_channel.recv() => {
                     let msg = if data.is_empty() {
                         data_handler.make_quit_message(&service_code, &client_id)
                     } else {
                         data_handler.make_data_message(&data, &service_code, &client_id)
                     };
-                    let chunk = DataChunk {set: vec![msg], e: String::new()};
-                    let payload = chunk.dump();
-                    msg_bytes = payload.len();
-                    let out_msg = mqtt::Message::new(&cl_topic, payload, qos);
-                    match client.publish(out_msg).await {
-                        Ok(_) => {
-                            raw_bytes = chunk.data_size();
-                        },
-                        Err(err) => {
-                            error!("Failed to send data for {}: {}", service_code, err);
-                            error_count += 1;
-                        }
-                    }
+                    chunks.add_data(&cl_topic, msg);
                 },
             }
         }
@@ -518,6 +543,10 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
 
         let mut stream = client.get_stream(cap);
         let (mut raw_bytes, mut msg_bytes, mut error_count) = (0, 0, 0);
+        let mut chunks = TargetChunks::new();
+        let send_delay = settings.collect_message_timeout();
+        let service_delay = settings.service_delay();
+        let chunk_size = settings.chunk_output_size();
 
         loop {
             if error_count + raw_bytes + msg_bytes > 0 {
@@ -592,25 +621,36 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
                         },
                     }
                 },
+                _ = sleep(send_delay) => {
+                    loop {
+                        let (cl_topic, chunk) = chunks.extract_slice(chunk_size);
+                        if cl_topic.is_empty() || chunk.len() < 1 {
+                            sleep(service_delay).await;
+                            break;
+                        }
+                        let payload = chunk.dump();
+                        msg_bytes += payload.len();
+                        let out_msg = mqtt::Message::new(&cl_topic, payload, qos);
+                        match client.publish(out_msg).await {
+                            Ok(_) => {
+                                raw_bytes += chunk.data_size();
+                            },
+                            Err(err) => {
+                                error!("Problem sending UDP data in {}: {}", cl_topic, err);
+                                sleep(service_delay).await;
+                                error_count += 1;
+                                break;
+                            }
+                        }
+                    }
+                },
                 Some((client_id, service_code, data, cl_topic)) = data_out_channel.recv() => {
                     let msg = if data.is_empty() {
                         data_handler.make_quit_message(&service_code, &client_id)
                     } else {
                         data_handler.make_data_message(&data, &service_code, &client_id)
                     };
-                    let chunk = DataChunk {set: vec![msg], e: String::new()};
-                    let payload = chunk.dump();
-                    msg_bytes = payload.len();
-                    let out_msg = mqtt::Message::new(&cl_topic, payload, qos);
-                    match client.publish(out_msg).await {
-                        Ok(_) => {
-                            raw_bytes = chunk.data_size();
-                        },
-                        Err(err) => {
-                            error!("Problem sending data in {}: {}", service_code, err);
-                            error_count += 1;
-                        }
-                    }
+                    chunks.add_data(&cl_topic, msg);
                 },
             }
         }
