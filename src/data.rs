@@ -16,7 +16,6 @@ pub fn server_data_topic(is_tcp: bool, service_code: &str) -> String {
     format!("s{}-{}-{}", if is_tcp {"t"} else {"u"}, TOPIC_NAME_DATA_CLIENT, service_code)
 }
 
-
 #[derive(Serialize, Deserialize, Clone)]
 pub struct DataMsg {
     pub c_id: String,

@@ -29,6 +29,9 @@ use tokio::time::sleep;
 use tokio::net::UdpSocket;
 use tokio::sync::mpsc;
 
+const OUT_TTL: u32 = 128;
+
+
 /// Handles a TCP connection to a target service, forwarding data between client and target
 async fn handle_target_tcp_connection(
     client_id: String,
@@ -50,6 +53,9 @@ async fn handle_target_tcp_connection(
         }
     };
     let buffer_size= settings.buffer_size;
+    if tcp_stream.set_ttl(OUT_TTL).is_err() {
+        warn!("TTL is {}", tcp_stream.ttl().unwrap());
+    }
     let (mut reader, mut writer) = tokio::io::split(tcp_stream);
     let mut read_buffer = vec![0u8; buffer_size];
     let ip = target_host.to_string();
@@ -58,9 +64,11 @@ async fn handle_target_tcp_connection(
         stat_update.connection_new(&ip, &service_name);
         format!("{} ({}) - {}:{}", service_name, service_code, target_host, target_port)
     };
-    let idle_limit = settings.idle_tcp_limit as u64;
+    let idle_limit = Duration::from_secs(settings.idle_tcp_limit as u64);
     let mut with_quit = String::new();
-
+    let wait_before_close_time = settings.collect_message_timeout(true);
+    let min_delay= settings.service_delay();
+    let keep_conn = settings.keep_connection_mode;
     let (mut in_bytes, mut out_bytes, mut error_count) = (0, 0, 0);
 
     loop {
@@ -78,7 +86,15 @@ async fn handle_target_tcp_connection(
                                 in_bytes = n;
                             },
                             Err(err) => {
+                                error_count += 1;
                                 error!("Failed to send data to client {} in {} {}", client_id, serv, err);
+                                with_quit = format!("Connection {} closed after closed out channel {}", serv, client_id);
+                                if keep_conn {
+                                    sleep(min_delay).await;
+                                    continue;
+                                } else {
+                                    break;
+                                }
                             }
                         }
                     },
@@ -96,15 +112,20 @@ async fn handle_target_tcp_connection(
                     break;
                 }
                 if let Err(err) = writer.write_all(&out_data).await {
+                    error_count += 1;
                     error!("Failed to write to TCP stream for {} {}: {}", client_id, serv, err);
                     with_quit = format!("Connection {} closed by error for {}", serv, client_id);
-                    error_count += 1;
-                    break;
+                    if keep_conn {
+                        sleep(min_delay).await;
+                        continue;
+                    } else {
+                        break;
+                    }
                 } else {
                     out_bytes = out_data.len();
                 }
             },
-            _ = sleep(Duration::from_secs(idle_limit)) => {
+            _ = sleep(idle_limit) => {
                 with_quit = format!("Connection {} closed by idle timeout for {}", serv, client_id);
                 break;
             }
@@ -119,13 +140,30 @@ async fn handle_target_tcp_connection(
             (in_bytes, out_bytes, error_count) = (0, 0, 0);
         }
     }
-    if !with_quit.is_empty() {
-        match out_channel.send((client_id.clone(), service_code.clone(), [].to_vec(), topic.clone())).await {
-            Ok(_) => {
-                warn!("{} (quit request sending)", with_quit);
+    // final data transfering operations
+    loop {
+        tokio::select! {
+            Some((_, out_data)) = in_data_channel.recv() => {
+                if out_data.is_empty() {
+                    continue;
+                }
+                if let Err(err) = writer.write_all(&out_data).await {
+                    error!("Failed to write to TCP stream for {} {}: {}", client_id, serv, err);
+                    error_count += 1;
+                }
             },
-            Err(err) => {
-                error!("Out channel stopped for {} with error: {}", serv, err);
+            _ = sleep(wait_before_close_time) => {
+                if !with_quit.is_empty() {
+                    info!("{} (quit request sending)", with_quit);
+                    match out_channel.send((client_id.clone(), service_code.clone(), [].to_vec(), topic.clone())).await {
+                        Ok(_) => {},
+                        Err(err) => {
+                            error_count += 1;
+                            error!("Out channel stopped for {} with error: {}", serv, err);
+                        }
+                    }
+                }
+                break;
             }
         }
     }
@@ -178,9 +216,9 @@ async fn handle_target_udp_transfering(
         stat_update.connection_new(&ip, &service_name);
         format!("{} ({}) - {}:{}", service_name, service_code, target_host, target_port)
     };
-    let idle_limit = settings.idle_tcp_limit as u64;
+    let idle_limit = Duration::from_secs(settings.idle_tcp_limit as u64);
+    let wait_before_close_time = settings.collect_message_timeout(true);
     let mut with_quit = String::new();
-
     let (mut in_bytes, mut out_bytes, mut error_count) = (0, 0, 0);
     let target_addr = (target_host, target_port);
 
@@ -201,6 +239,7 @@ async fn handle_target_udp_transfering(
                             Err(err) => {
                                 error_count += 1;
                                 error!("Failed to send data to UDP client {} in {}: {}", client_id, serv, err);
+                                continue;
                             }
                         }
                     },
@@ -229,7 +268,7 @@ async fn handle_target_udp_transfering(
                     }
                 }
             },
-            _ = sleep(Duration::from_secs(idle_limit)) => {
+            _ = sleep(idle_limit) => {
                 with_quit = format!("Connection {} closed by idle timeout for {}", serv, client_id);
                 break;
             }
@@ -244,16 +283,41 @@ async fn handle_target_udp_transfering(
             (in_bytes, out_bytes, error_count) = (0, 0, 0);
         }
     }
-    if !with_quit.is_empty() {
-        match out_channel.send((client_id.clone(), service_code.clone(), [].to_vec(), topic.clone())).await {
-            Ok(_) => {
-                warn!("{} (quit request sending)", with_quit);
+    // final reading client
+    loop {
+        tokio::select! {
+            Some((_, out_data)) = in_data_channel.recv() => {
+                if out_data.is_empty() {
+                    continue;
+                }
+
+                match socket.send_to(&out_data, target_addr).await {
+                    Ok(n) => {
+                        out_bytes += n;
+                    },
+                    Err(err) => {
+                        error_count += 1;
+                        error!("Failed to send UDP data to {} ({}) from {}: {}", target_host, service_name, client_id, err);
+                        break;
+                    }
+                }
             },
-            Err(err) => {
-                error!("Out channel stopped for {} with error: {}", serv, err);
+            _ = sleep(wait_before_close_time) => {
+                if !with_quit.is_empty() {
+                    match out_channel.send((client_id.clone(), service_code.clone(), [].to_vec(), topic.clone())).await {
+                        Ok(_) => {
+                            warn!("{} (quit request sending)", with_quit);
+                        },
+                        Err(err) => {
+                            error!("Out channel stopped for {} with error: {}", serv, err);
+                        }
+                    }
+                }
+                break;
             }
         }
     }
+
     let mut stat_update = stat.write().await;
     if in_bytes + out_bytes + error_count > 0 {
         if error_count > 0 {
@@ -334,7 +398,6 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         let (service_in_channel_size, service_out_channel_size) = settings.channel_size();
         let (data_in_channel, mut data_out_channel) = mpsc::channel(service_in_channel_size);
         // input chunks
-        let delay = settings.collect_message_timeout();
         let route = RoutingState::create("main".to_string());
         let idle_tcp_limit = (settings.idle_tcp_limit as u64).clone();
         let watch_connection_route_arc = Arc::new(RwLock::new(route));
@@ -347,7 +410,7 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         let mut stream = client.get_stream(cap);
         let (mut raw_bytes, mut msg_bytes, mut error_count) = (0, 0, 0);
         let mut chunks = TargetChunks::new();
-        let send_delay = settings.collect_message_timeout();
+        let send_delay = settings.collect_message_timeout(false);
         let service_delay = settings.service_delay();
         let chunk_size = settings.chunk_output_size();
 
@@ -366,7 +429,7 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
                         Some(new_msg) => {
                             let payload = new_msg.payload();
                             let topic = new_msg.topic();
-                            msg_bytes = payload.len();
+                            msg_bytes += payload.len();
                             let new_chunk: DataChunk = data_handler.load_data_message(&payload);
                             if !new_chunk.e.is_empty() {
                                 error!("Client reported error in topic {}: {}", topic, new_chunk.e);
@@ -412,14 +475,14 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
                                 if msg.x {
                                     connection_route.send_quit(&client_id).await;
                                 } else {
-                                    raw_bytes = msg.d.len();
+                                    raw_bytes += msg.d.len();
                                     connection_route.send_data(&client_id, &msg.d).await;
                                 }
                             }
                         },
                         None => {
                             error!("MQTT event critical error: non payload message");
-                            sleep(delay).await;
+                            sleep(send_delay).await;
                             continue;
                         },
                     }
@@ -505,7 +568,7 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
     tasks.spawn(async move {
         let cap = settings.stream_capacity();
         let qos = settings.qos_level();
-        let delay = settings.collect_message_timeout();
+        let delay = settings.collect_message_timeout(false);
         let (create_opts, conn_opts) = settings.make_mqtt_options(&connection_name);
         let mut client = mqtt::AsyncClient::new(create_opts).expect("Error creating the async MQTT client");
 
@@ -544,7 +607,7 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         let mut stream = client.get_stream(cap);
         let (mut raw_bytes, mut msg_bytes, mut error_count) = (0, 0, 0);
         let mut chunks = TargetChunks::new();
-        let send_delay = settings.collect_message_timeout();
+        let send_delay = settings.collect_message_timeout(false);
         let service_delay = settings.service_delay();
         let chunk_size = settings.chunk_output_size();
 

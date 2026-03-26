@@ -37,6 +37,7 @@ const ENV_BROKER_QOS: &str = "QOS";
 const ENV_BROKER_PASSWORD: &str = "BROKER_PASSWORD";
 const ENV_BROKER_PORT: &str = "BROKER_PORT";
 const ENV_LOADING_LEVEL: &str = "LOADING_LEVEL";
+const ENV_KEEP_CONNECTION: &str = "KEEP_CONNECTION";
 
 pub const TOPIC_NAME_DATA_CLIENT: &str = "data-c";
 pub const TOPIC_NAME_DATA_SERVER: &str = "data-s";
@@ -219,6 +220,7 @@ pub struct Settings {
     pub udp_bind_from: String,
     pub loading_level: LoadingLevelEnum,
     pub delay_rate: usize,
+    pub keep_connection_mode: bool,
 }
 
 pub fn fast_name() -> String {
@@ -237,7 +239,7 @@ pub fn code_name(value: &str) -> String {
 
 pub trait LoadingParams {
     fn channel_size(&self) -> (usize, usize);
-    fn collect_message_timeout(&self) -> Duration;
+    fn collect_message_timeout(&self, final_mode: bool) -> Duration;
     fn chunk_output_size(&self) -> usize;
     fn chunk_size_warning(&self) -> usize;
     fn qos_level(&self) -> i32;
@@ -284,42 +286,42 @@ impl LoadingParams for Settings {
     /// Minimal pause value for network operations
     fn service_delay(&self) -> Duration {
         let ms = match self.loading_level {
-            LoadingLevelEnum::Default => 2,
-            LoadingLevelEnum::High => 1,
-            LoadingLevelEnum::Extremely => 1,
-            LoadingLevelEnum::Low => 5,
+            LoadingLevelEnum::Default => 4,
+            LoadingLevelEnum::High => 3,
+            LoadingLevelEnum::Extremely => 2,
+            LoadingLevelEnum::Low => 6,
         };
         Duration::from_millis(ms)
     }
 
     /// Returns the timeout duration for collecting messages based on the loading level
-    fn collect_message_timeout(&self) -> Duration {
-        let ms = match self.loading_level {
-            LoadingLevelEnum::Default => 15,
-            LoadingLevelEnum::High => 10,
-            LoadingLevelEnum::Extremely => 8,
-            LoadingLevelEnum::Low => 18,
+    fn collect_message_timeout(&self, final_mode: bool) -> Duration {
+        let (ms, long_ms) = match self.loading_level {
+            LoadingLevelEnum::Default => (12, 250),
+            LoadingLevelEnum::High => (10, 200),
+            LoadingLevelEnum::Extremely => (6, 190),
+            LoadingLevelEnum::Low => (15, 300),
         };
-        Duration::from_millis(ms)
+        Duration::from_millis(if final_mode {long_ms} else {ms})
     }
 
     /// Returns the chunk size warning threshold based on the loading level
     fn chunk_size_warning(&self) -> usize {
         match self.loading_level {
-            LoadingLevelEnum::Default => 50,
-            LoadingLevelEnum::High => 100,
-            LoadingLevelEnum::Extremely => 120,
-            LoadingLevelEnum::Low => 30,
+            LoadingLevelEnum::Default => 110,
+            LoadingLevelEnum::High => 150,
+            LoadingLevelEnum::Extremely => 180,
+            LoadingLevelEnum::Low => 55,
         }
     }
 
     /// Returns the output buffer size for chunks based on the loading level
     fn chunk_output_size(&self) -> usize {
         match self.loading_level {
-            LoadingLevelEnum::Default => 100,
-            LoadingLevelEnum::High => 120,
-            LoadingLevelEnum::Extremely => 150,
-            LoadingLevelEnum::Low => 50,
+            LoadingLevelEnum::Default => 120,
+            LoadingLevelEnum::High => 160,
+            LoadingLevelEnum::Extremely => 200,
+            LoadingLevelEnum::Low => 70,
         }
     }
 
@@ -399,8 +401,8 @@ pub fn create_settings() -> Settings {
     } else {
         IpPortMap::new()
     };
-    let idle_tcp_limit = _read_env_uint(ENV_CONNECTION_IDLE, true, 60 * 3);
-    let idle_udp_limit = _read_env_uint(ENV_UDP_CONNECTION_IDLE, true, 60);
+    let idle_tcp_limit = _read_env_uint(ENV_CONNECTION_IDLE, true, 60 * 5);
+    let idle_udp_limit = _read_env_uint(ENV_UDP_CONNECTION_IDLE, true, 60 * 2);
     let mut udp_bind_from = _read_env_str(ENV_UDP_BIND_FROM, true);
     if udp_bind_from.is_empty() {udp_bind_from = "0.0.0.0:0".to_string();}
     let broker_qos = _read_env_uint(ENV_BROKER_QOS, true, 0);
@@ -410,6 +412,7 @@ pub fn create_settings() -> Settings {
     let broker_port = _read_env_uint(ENV_BROKER_PORT, true, 1883) as u16;
     let clients = _read_env_strings(ENV_CLIENTS, !is_server);
     let delay_rate = _read_env_uint(ENV_MAX_DELAY_RATE, true, 5);
+    let keep_connection_mode = _read_env_bool(ENV_KEEP_CONNECTION, true, false);
     let loading_level = match LoadingLevelEnum::from_str(
         &_read_env_str(ENV_LOADING_LEVEL, true)
     ) {
@@ -439,6 +442,7 @@ pub fn create_settings() -> Settings {
         udp_bind_from,
         loading_level,
         delay_rate,
+        keep_connection_mode,
     };
     if settings.buffer_size < 1024 {
         settings.buffer_size = settings.default_buffer_size();

@@ -20,6 +20,7 @@ Possible values for the variable:
 Additionally, you may need to configure the following to optimize for your specific services:
 
 - `WORKERS=8` - should be increased if there are many targets or clients
+- `KEEP_CONNECTION=true` - try to handle next operation after read/write errors, it is better option for several network services
 - `READ_BUFFER_SIZE=16384` - read buffer size; sometimes it needs to be specified manually (a manually set value overrides the one determined by `LOADING_LEVEL`)
 - `RUST_LOG=warning` - set this if you don't need extensive logging
 
