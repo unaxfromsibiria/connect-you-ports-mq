@@ -139,7 +139,7 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
     info!("Mode: {} loading: {} buffer size: {}", if is_s {"server"} else {"client"}, settings.loading_level, settings.buffer_size);
     info!("Client: {}", settings.client_name);
     let mut data_handler = DataHandlerSettings::new();
-    if !data_handler.setup(&settings) {
+    if !data_handler.setup(settings) {
         error!("Wrong settings for cipher");
         return Ok(());
     }

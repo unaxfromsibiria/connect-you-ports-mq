@@ -44,7 +44,7 @@ pub const TOPIC_NAME_DATA_SERVER: &str = "data-s";
 type IpPortMap = HashMap<String, HashMap<IpAddr, u16>>;
 
 /// Represents different levels of loading intensity
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Debug)]
 pub enum LoadingLevelEnum {
     Extremely,
     Default,
@@ -221,6 +221,16 @@ pub struct Settings {
     pub loading_level: LoadingLevelEnum,
     pub delay_rate: usize,
     pub keep_connection_mode: bool,
+}
+
+pub trait EncryptionData {
+    fn main_cipher_key(&self) -> String;
+}
+
+impl EncryptionData for Settings {
+    fn main_cipher_key(&self) -> String {
+        self.cipher_key.clone()
+    }
 }
 
 pub fn fast_name() -> String {
@@ -580,5 +590,204 @@ pub async fn clear_routing(service: String, routing_arc: Arc<RwLock<RoutingState
             routing.clear_old(max_age);
         }
         count += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+    use std::time::Duration;
+    use std::sync::Arc;
+    use tokio::sync::{RwLock, mpsc};
+
+    #[test]
+    fn test_loading_level_enum_display() {
+        assert_eq!(format!("{}", LoadingLevelEnum::Default), "Default level");
+        assert_eq!(format!("{}", LoadingLevelEnum::Low), "Low level");
+        assert_eq!(format!("{}", LoadingLevelEnum::High), "High level");
+        assert_eq!(format!("{}", LoadingLevelEnum::Extremely), "Extremely level");
+    }
+
+    #[test]
+    fn test_loading_level_enum_from_str() {
+        assert_eq!(LoadingLevelEnum::from_str("").unwrap(), LoadingLevelEnum::Default);
+        assert_eq!(LoadingLevelEnum::from_str("default").unwrap(), LoadingLevelEnum::Default);
+        assert_eq!(LoadingLevelEnum::from_str("DEFAULT").unwrap(), LoadingLevelEnum::Default);
+        assert_eq!(LoadingLevelEnum::from_str("low").unwrap(), LoadingLevelEnum::Low);
+        assert_eq!(LoadingLevelEnum::from_str("high").unwrap(), LoadingLevelEnum::High);
+        assert_eq!(LoadingLevelEnum::from_str("extremely").unwrap(), LoadingLevelEnum::Extremely);
+        let invalid = LoadingLevelEnum::from_str("unknown");
+        assert!(invalid.is_err());
+    }
+
+    #[test]
+    fn test_read_env_socket_maps() {
+        unsafe {
+            env::set_var("TEST_SOCKET_MAP", "svc1:127.0.0.1:8080;svc2:192.168.1.1:3000");
+        }
+        let result = _read_env_socket_maps("TEST_SOCKET_MAP", true);
+        let svc1_ips = result.get("svc1").unwrap();
+        let ip = "127.0.0.1".parse::<IpAddr>().unwrap();
+        assert_eq!(svc1_ips.get(&ip), Some(&8080));
+        let svc2_ips = result.get("svc2").unwrap();
+        let ip2 = "192.168.1.1".parse::<IpAddr>().unwrap();
+        assert_eq!(svc2_ips.get(&ip2), Some(&3000));
+        unsafe {
+            env::remove_var("TEST_SOCKET_MAP");
+        }
+    }
+
+    #[test]
+    fn test_read_env_bool() {
+        let test_cases = vec![
+            ("true", true),
+            ("True", true),
+            ("YES", true),
+            ("on", true),
+            ("1", true),
+            ("ok", true),
+            ("false", false),
+            ("no", false),
+            ("0", false),
+            ("off", false),
+            ("", false),
+        ];
+
+        for (val, expected) in test_cases {
+            unsafe {
+                env::set_var("TEST_BOOL_VAR", val);
+            }
+            let result = _read_env_bool("TEST_BOOL_VAR", true, false);
+            assert_eq!(result, expected, "Failed for input '{}'", val);
+            unsafe {
+                env::remove_var("TEST_BOOL_VAR");
+            }
+        }
+        unsafe {
+            env::remove_var("TEST_BOOL_VAR");
+        }
+        let result = _read_env_bool("MISSING_VAR", true, true);
+        assert_eq!(result, true);
+    }
+
+    #[test]
+    fn test_read_env_str() {
+        unsafe {
+            env::set_var("TEST_STRING_VAR", "Hello World");
+        }
+        let result = _read_env_str("TEST_STRING_VAR", true);
+        assert_eq!(result, "Hello World");
+        unsafe {
+            env::remove_var("TEST_STRING_VAR");
+        }
+        let result_missing = _read_env_str("MISSING_VAR", true);
+        assert_eq!(result_missing, "");
+    }
+
+    #[test]
+    fn test_read_env_uint() {
+        unsafe {
+            env::set_var("TEST_UINT_VAR", "42");
+        }
+        let result = _read_env_uint("TEST_UINT_VAR", true, 0);
+        assert_eq!(result, 42);
+        unsafe {
+            env::remove_var("TEST_UINT_VAR");
+        }
+        unsafe {
+            env::set_var("TEST_UINT_VAR", "abc");
+        }
+        let result = _read_env_uint("TEST_UINT_VAR", true, 10);
+        assert_eq!(result, 10);
+        unsafe {
+            env::remove_var("TEST_UINT_VAR");
+        }
+    }
+
+    #[test]
+    fn test_read_env_strings() {
+        unsafe {
+            env::set_var("TEST_STRINGS_VAR", "item1; item2; item3");
+        }
+        let result = _read_env_strings("TEST_STRINGS_VAR", true);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0], "item1");
+        assert_eq!(result[1], "item2");
+        assert_eq!(result[2], "item3");
+        unsafe {
+            env::remove_var("TEST_STRINGS_VAR");
+        }
+        let result_empty = _read_env_strings("MISSING_VAR", true);
+        assert!(result_empty.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_routing_create_and_exist() {
+        let routing = RoutingState::create("test_service".to_string());
+        let test_id = "client_1".to_string();
+        assert!(!routing.exist(&test_id));
+    }
+
+    #[tokio::test]
+    async fn test_add_client_and_exist() {
+        let mut routing = RoutingState::create("test_service".to_string());
+        let client_id = "client_1".to_string();
+        let (tx, rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        routing.add_client(&client_id, tx);
+        assert!(routing.exist(&client_id));
+        drop(rx);
+    }
+
+    #[tokio::test]
+    async fn test_send_data() {
+        let mut routing = RoutingState::create("test_service".to_string());
+        let client_id = "client_1".to_string();
+        let (tx, mut rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        routing.add_client(&client_id, tx);
+        let data = vec![1, 2, 3];
+        routing.send_data(&client_id, &data).await;
+        let (received_id, received_data) = rx.recv().await.unwrap();
+        assert_eq!(received_id, client_id);
+        assert_eq!(received_data, data);
+    }
+
+    #[tokio::test]
+    async fn test_send_quit() {
+        let mut routing = RoutingState::create("test_service".to_string());
+        let client_id = "client_1".to_string();
+        let (tx, mut rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        routing.add_client(&client_id, tx);
+        routing.send_quit(&client_id).await;
+        let (received_id, received_data) = rx.recv().await.unwrap();
+        assert_eq!(received_id, client_id);
+        assert!(received_data.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_clear_old() {
+        let mut routing = RoutingState::create("test_service".to_string());
+        let client_id = "client_1".to_string();
+        let (tx, _rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        routing.add_client(&client_id, tx);
+        let max_age = Duration::from_secs(0);
+        routing.clear_old(max_age);
+        assert!(!routing.exist(&client_id));
+    }
+
+    #[tokio::test]
+    async fn test_clear_routing_lifecycle() {
+        let service = "test_service".to_string();
+        let routing_arc: Arc<RwLock<RoutingState>> = Arc::new(RwLock::new(RoutingState::create(service.clone())));
+        let client_id = "client_1".to_string();
+        let (tx, _rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        {
+            let mut routing = routing_arc.write().await;
+            routing.add_client(&client_id, tx);
+        }
+        let idle_time = 2; 
+        let handle = tokio::spawn(clear_routing(service.clone(), Arc::clone(&routing_arc), idle_time));
+        tokio::time::sleep(Duration::from_secs(idle_time * 3)).await;
+        handle.abort();
     }
 }

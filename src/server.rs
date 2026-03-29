@@ -356,7 +356,7 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         }
     }
     let mut data_handler = DataHandlerSettings::new();
-    if !data_handler.setup(&settings) {
+    if !data_handler.setup(settings) {
         error!("Failed to initialize cipher settings");
         return;
     }
@@ -548,7 +548,7 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         }
     }
     let mut data_handler = DataHandlerSettings::new();
-    if !data_handler.setup(&settings) {
+    if !data_handler.setup(settings) {
         error!("Wrong settings for cipher");
         return;
     }

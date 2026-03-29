@@ -5,7 +5,7 @@ use crate::common;
 use log::{info, error};
 use serde::{Serialize, Deserialize};
 use hex::decode;
-use common::{Settings, TOPIC_NAME_DATA_CLIENT, TOPIC_NAME_DATA_SERVER};
+use common::{EncryptionData, TOPIC_NAME_DATA_CLIENT, TOPIC_NAME_DATA_SERVER};
 use aes_gcm::{Aes256Gcm, Nonce, Key, aead::{Aead, AeadCore, KeyInit, OsRng}};
 
 pub fn client_data_topic(is_tcp: bool, service_code: &str) -> String {
@@ -79,7 +79,7 @@ impl DataMessageFormater for DataChunk {
 
 pub trait DataHandler {
     fn new() -> Self;
-    fn setup(&mut self, settings: &Settings) -> bool;
+    fn setup<T: EncryptionData>(&mut self, settings: &T) -> bool;
     fn make_data_message(&self, data: &[u8], code: &str, client: &str) -> DataMsg;
     fn make_quit_message(&self, code: &str, client: &str) -> DataMsg;
     fn load_data_message(&self, data: &[u8]) -> DataChunk;
@@ -90,9 +90,10 @@ impl DataHandler for DataHandlerSettings {
         DataHandlerSettings {cipher: None, encryption: false}
     }
 
-    fn setup(&mut self, settings: &Settings) -> bool {
-        if !settings.cipher_key.is_empty() {
-            let key_bytes = decode(&settings.cipher_key).expect("Incorrect Aes256Gcm key value");
+    fn setup<T: EncryptionData>(&mut self, settings: &T) -> bool {
+        let cipher_key = settings.main_cipher_key();
+        if !settings.main_cipher_key().is_empty() {
+            let key_bytes = decode(cipher_key).expect("Incorrect Aes256Gcm key value");
             if key_bytes.is_empty() {
                 return false;
             } else {
@@ -218,5 +219,119 @@ impl ChunkTopic for TargetChunks {
         let mut empty_chunk = DataChunk::new();
         empty_chunk.e = String::new();
         ("".to_string(), empty_chunk)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use common::EncryptionData;
+
+    struct MockEncryptionData {
+        key: String,
+    }
+
+    impl MockEncryptionData {
+        fn new(key: &str) -> Self {
+            MockEncryptionData { key: key.to_string() }
+        }
+    }
+
+    impl EncryptionData for MockEncryptionData {
+        fn main_cipher_key(&self) -> String {
+            self.key.clone()
+        }
+    }
+
+    #[test]
+    fn test_topic_generation() {
+        let topic_tcp = client_data_topic(true, "svc123");
+        assert!(topic_tcp.contains("t"));
+        assert!(topic_tcp.contains("svc123"));
+        let topic_udp = client_data_topic(false, "svc123");
+        assert!(topic_udp.contains("u"));
+        let server_topic = server_data_topic(true, "svc123");
+        assert!(server_topic.contains("s"));
+    }
+
+    #[test]
+    fn test_data_handler_plain() {
+        let mut handler = DataHandlerSettings::new();
+        let _ = handler.setup(&MockEncryptionData::new(""));
+        assert!(!handler.encryption);
+        let msg = handler.make_data_message(b"Hello World", "OP1", "client123");
+        assert_eq!(msg.c_id, "client123");
+        assert_eq!(msg.se, "OP1");
+        assert_eq!(msg.d, b"Hello World");
+        assert!(!msg.n.is_empty() || msg.n.is_empty());
+        let msg_quit = handler.make_quit_message("QUIT", "client123");
+        assert!(msg_quit.x);
+        assert_eq!(msg_quit.d, vec![]);
+    }
+
+    #[test]
+    fn test_data_chunk_formatting() {
+        let mut chunk = DataChunk::new();
+        chunk.set.push(DataMsg {
+            c_id: "c1".to_string(),
+            se: "op".to_string(),
+            d: vec![1, 2, 3],
+            e: "".to_string(),
+            x: false,
+            n: vec![],
+        });
+        chunk.set.push(DataMsg {
+            c_id: "c2".to_string(),
+            se: "op".to_string(),
+            d: vec![4, 5, 6],
+            e: "".to_string(),
+            x: false,
+            n: vec![],
+        });
+        assert_eq!(chunk.len(), 2);
+        assert_eq!(chunk.data_size(), 6);
+        let serialized = chunk.dump();
+        let deserialized: DataChunk = bincode::deserialize(&serialized).unwrap();
+        assert_eq!(deserialized.set.len(), 2);
+        assert_eq!(deserialized.set[0].d, vec![1, 2, 3]);
+        let mut chunk = chunk;
+        let extracted = chunk.extract_slice(10);
+        assert!(!extracted.set.is_empty());
+        assert_eq!(extracted.set.len(), 2);
+    }
+
+    #[test]
+    fn test_target_chunks() {
+        let mut targets = TargetChunks::new();
+        let msg1 = DataMsg {
+            c_id: "c1".to_string(), se: "op1".to_string(), d: vec![1], e: "".to_string(), x: false, n: vec![]
+        };
+        let msg2 = DataMsg {
+            c_id: "c2".to_string(), se: "op2".to_string(), d: vec![2], e: "".to_string(), x: false, n: vec![]
+        };
+        targets.add_data("topic_A", msg1.clone());
+        targets.add_data("topic_A", msg2);
+        targets.add_data("topic_A", msg1.clone());
+        let (topic, chunk) = targets.extract_slice(1);
+        assert_eq!(topic, "topic_A");
+        assert_eq!(chunk.set.len(), 1);
+        let (topic, chunk) = targets.extract_slice(1);
+        assert_eq!(topic, "topic_A");
+        assert_eq!(chunk.set.len(), 1);
+        let (topic, chunk) = targets.extract_slice(1);
+        assert_eq!(topic, "topic_A");
+        assert_eq!(chunk.set.len(), 1);
+        let (topic, chunk) = targets.extract_slice(1);
+        assert_eq!(topic, "");
+        assert!(chunk.set.is_empty());
+
+        targets.add_data("topic_C", DataMsg { c_id: "c".to_string(), se: "op".to_string(), d: vec![0], e: "".to_string(), x: false, n: vec![] });
+        let (_, empty) = targets.extract_slice(0);
+        assert!(empty.set.is_empty());
+        let (_, empty) = targets.extract_slice(1);
+        assert_eq!(empty.set.len(), 1);
+        let (topic_final, empty) = targets.extract_slice(1);
+        assert_eq!(topic_final, "");
+        assert!(empty.set.is_empty());
     }
 }
