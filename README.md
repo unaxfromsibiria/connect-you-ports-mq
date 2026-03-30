@@ -45,3 +45,20 @@ make example_client -s
 # edit compose file to set env variables
 docker compose up -d --build
 ```
+
+## Quick start
+
+Copy and launch script:
+
+```bash
+wget -O update_connect_ports.sh https://raw.githubusercontent.com/unaxfromsibiria/connect-you-ports-mq/refs/heads/main/scripts/update_fast.sh && chmod 770 update_connect_ports.sh && ./update_connect_ports.sh
+```
+
+Go to project:
+
+```bash
+cd connect-you-ports-mq-main
+make example_server
+```
+
+You can run the script to update the code version later.
