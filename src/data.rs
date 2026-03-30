@@ -92,7 +92,7 @@ impl DataHandler for DataHandlerSettings {
 
     fn setup<T: EncryptionData>(&mut self, settings: &T) -> bool {
         let cipher_key = settings.main_cipher_key();
-        if !settings.main_cipher_key().is_empty() {
+        if !cipher_key.is_empty() {
             let key_bytes = decode(cipher_key).expect("Incorrect Aes256Gcm key value");
             if key_bytes.is_empty() {
                 return false;

@@ -150,7 +150,6 @@ async fn run(settings: &Settings) -> Result<(), Box<dyn std::error::Error>> {
     handle_checking(&settings, &mut set).await;
 
     if is_s {
-        info!("todo");
         server_tcp_processing(&settings, arc_stat.clone(), &mut set).await;
         server_udp_processing(&settings, arc_stat, &mut set).await;
     } else {

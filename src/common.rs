@@ -1,3 +1,4 @@
+use bytes::Bytes;
 use std::env;
 use std::fmt;
 use std::str::FromStr;
@@ -464,7 +465,7 @@ pub fn create_settings() -> Settings {
 /// Tracks active clients and their message timestamps for cleanup.
 pub struct RoutingState {
     service: String,
-    client_routing: HashMap<String, mpsc::Sender<(String, Vec<u8>)>>,
+    client_routing: HashMap<String, mpsc::Sender<(String, Bytes)>>,
     message_update: HashMap<String, DateTime<Utc>>,
 }
 
@@ -474,7 +475,7 @@ pub trait RoutingManager {
     fn exist(&self, client_id: &String) -> bool;
 
     /// Adds a new client to the routing table with its message channel.
-    fn add_client(&mut self, client_id: &String, tx: mpsc::Sender<(String, Vec<u8>)>);
+    fn add_client(&mut self, client_id: &String, tx: mpsc::Sender<(String, Bytes)>);
 
     /// Sends data to a specific client asynchronously.
     async fn send_data(&mut self, client_id: &String, data: &[u8]);
@@ -515,7 +516,7 @@ impl RoutingManager for RoutingState {
         for client_id in to_remove {
             if let Some(tx) = self.client_routing.remove(&client_id) {
                 let data_vec = [].to_vec();
-                let send_result = tx.try_send((client_id.clone(), data_vec));
+                let send_result = tx.try_send((client_id.clone(), Bytes::from(data_vec)));
                 if send_result.is_err() {
                     debug!("Failed to send quit to client {} during cleanup", client_id);
                 }
@@ -534,7 +535,7 @@ impl RoutingManager for RoutingState {
     }
 
     /// Adds a new client to the routing table with its message channel.
-    fn add_client(&mut self, client_id: &String, tx: mpsc::Sender<(String, Vec<u8>)>) {
+    fn add_client(&mut self, client_id: &String, tx: mpsc::Sender<(String, Bytes)>) {
         self.client_routing.insert(client_id.clone(), tx);
         self.message_update.insert(client_id.clone(), Utc::now());
     }
@@ -543,7 +544,7 @@ impl RoutingManager for RoutingState {
     async fn send_quit(&mut self, client_id: &String) {
         if let Some(tx) = self.client_routing.get(client_id) {
             let data_vec = [].to_vec();
-            let send_result = tx.send((client_id.clone(), data_vec)).await;
+            let send_result = tx.send((client_id.clone(), Bytes::from(data_vec))).await;
             match send_result {
                 Ok(_) => {
                     self.message_update.insert(client_id.clone(), Utc::now());
@@ -561,7 +562,7 @@ impl RoutingManager for RoutingState {
     async fn send_data(&mut self, client_id: &String, data: &[u8]) {
         if let Some(tx) = self.client_routing.get(client_id) {
             let data_vec = data.to_vec();
-            let send_result = tx.send((client_id.clone(), data_vec)).await;
+            let send_result = tx.send((client_id.clone(), Bytes::from(data_vec))).await;
             match send_result {
                 Ok(_) => {
                     self.message_update.insert(client_id.clone(), Utc::now());
@@ -733,7 +734,7 @@ mod tests {
     async fn test_add_client_and_exist() {
         let mut routing = RoutingState::create("test_service".to_string());
         let client_id = "client_1".to_string();
-        let (tx, rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        let (tx, rx) = mpsc::channel::<(String, Bytes)>(1);
         routing.add_client(&client_id, tx);
         assert!(routing.exist(&client_id));
         drop(rx);
@@ -743,7 +744,7 @@ mod tests {
     async fn test_send_data() {
         let mut routing = RoutingState::create("test_service".to_string());
         let client_id = "client_1".to_string();
-        let (tx, mut rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        let (tx, mut rx) = mpsc::channel::<(String, Bytes)>(1);
         routing.add_client(&client_id, tx);
         let data = vec![1, 2, 3];
         routing.send_data(&client_id, &data).await;
@@ -754,9 +755,11 @@ mod tests {
 
     #[tokio::test]
     async fn test_send_quit() {
+        assert!(Bytes::new().is_empty());
+        assert!(Bytes::from([].to_vec()).is_empty());
         let mut routing = RoutingState::create("test_service".to_string());
         let client_id = "client_1".to_string();
-        let (tx, mut rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        let (tx, mut rx) = mpsc::channel::<(String, Bytes)>(1);
         routing.add_client(&client_id, tx);
         routing.send_quit(&client_id).await;
         let (received_id, received_data) = rx.recv().await.unwrap();
@@ -768,7 +771,7 @@ mod tests {
     async fn test_clear_old() {
         let mut routing = RoutingState::create("test_service".to_string());
         let client_id = "client_1".to_string();
-        let (tx, _rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        let (tx, _rx) = mpsc::channel::<(String, Bytes)>(1);
         routing.add_client(&client_id, tx);
         let max_age = Duration::from_secs(0);
         routing.clear_old(max_age);
@@ -780,7 +783,7 @@ mod tests {
         let service = "test_service".to_string();
         let routing_arc: Arc<RwLock<RoutingState>> = Arc::new(RwLock::new(RoutingState::create(service.clone())));
         let client_id = "client_1".to_string();
-        let (tx, _rx) = mpsc::channel::<(String, Vec<u8>)>(1);
+        let (tx, _rx) = mpsc::channel::<(String, Bytes)>(1);
         {
             let mut routing = routing_arc.write().await;
             routing.add_client(&client_id, tx);

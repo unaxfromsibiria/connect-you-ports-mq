@@ -3,6 +3,7 @@ use crate::data::DataMessageFormater;
 use crate::stat;
 use crate::data;
 
+use bytes::Bytes;
 use common::{
     code_name,
     fast_name,
@@ -36,7 +37,7 @@ async fn processing_service_transport(
     stat: Arc<RwLock<Stat>>,
     service_code: String,
     service_name: String,
-    mut in_data_channel: mpsc::Receiver<(String, Vec<u8>)>,
+    mut in_data_channel: mpsc::Receiver<(String, Bytes)>,
     routing_arc: Arc<RwLock<RoutingState>>,
 ) {
     let serv = format!("{} ({})", service_name, service_code);
@@ -199,8 +200,8 @@ async fn handle_tcp_connection(
     ip: String,
     service_code: String,
     service_name: String,
-    in_data_channel: mpsc::Sender<(String, Vec<u8>)>,
-    mut out_data_channel: mpsc::Receiver<(String, Vec<u8>)>,
+    in_data_channel: mpsc::Sender<(String, Bytes)>,
+    mut out_data_channel: mpsc::Receiver<(String, Bytes)>,
 ) {
     let mut buf = vec![0; settings.buffer_size];
     let idle_limit = Duration::from_secs(settings.idle_tcp_limit as u64);
@@ -246,7 +247,7 @@ async fn handle_tcp_connection(
                     break;
                 }
                 out_bytes = n;
-                if in_data_channel.send((client_id.clone(), buf[..n].to_vec())).await.is_err() {
+                if in_data_channel.send((client_id.clone(), Bytes::from(buf[..n].to_vec()))).await.is_err() {
                     warn!("Failed to send data to channel for {} in {}", client_id, serv);
                     error_count += 1;
                     break;
@@ -283,7 +284,7 @@ async fn handle_tcp_connection(
     loop {
         tokio::select! {
             _ = sleep(wait_before_close_time) => {
-                if in_data_channel.send((client_id.clone(), [].to_vec())).await.is_err() {
+                if in_data_channel.send((client_id.clone(), Bytes::new())).await.is_err() {
                     warn!("Failed to send QUIT to channel for {} in {}", client_id, serv);
                 } else {
                     info!("Sent QUIT to channel for {} in {}", client_id, serv);
@@ -538,7 +539,7 @@ pub async fn udp_client_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
                         _ = current_clients.entry(client_id.clone()).or_insert(peer);
 
                         out_bytes = n;
-                        if in_data_channel.send((client_id.clone(), buf[..n].to_vec())).await.is_err() {
+                        if in_data_channel.send((client_id.clone(), Bytes::from(buf[..n].to_vec()))).await.is_err() {
                             warn!("Failed to send data to channel for UDP client {} in service {}", client_id, serv_name);
                             error_count += 1;
                             continue;

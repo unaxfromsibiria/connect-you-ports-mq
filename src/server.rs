@@ -13,6 +13,7 @@ use data::{
     TargetChunks,
     ChunkTopic,
 };
+use bytes::Bytes;
 use stat::{Stat, StatManage};
 use log::{info, warn, error, debug};
 use futures::StreamExt;
@@ -35,13 +36,13 @@ const OUT_TTL: u32 = 128;
 /// Handles a TCP connection to a target service, forwarding data between client and target
 async fn handle_target_tcp_connection(
     client_id: String,
-    settings: Settings,
+    settings: Arc<Settings>,
     stat: Arc<RwLock<Stat>>,
     service_code: String,
     service_name: String,
-    topic: String,
-    mut in_data_channel: mpsc::Receiver<(String, Vec<u8>)>,
-    out_channel: mpsc::Sender<(String, String, Vec<u8>, String)>,
+    service_index: u16,
+    mut in_data_channel: mpsc::Receiver<(String, Bytes)>,
+    out_channel: mpsc::Sender<(String, Bytes, u16)>,
     target_host: IpAddr,
     target_port: u16,
 ) {
@@ -81,7 +82,7 @@ async fn handle_target_tcp_connection(
                     },
                     Ok(n) => {
                         let data = &read_buffer[..n];
-                        match out_channel.send((client_id.clone(), service_code.clone(), data.to_vec(), topic.clone())).await {
+                        match out_channel.send((client_id.clone(), Bytes::from(data.to_vec()), service_index)).await {
                             Ok(_) => {
                                 in_bytes = n;
                             },
@@ -155,7 +156,7 @@ async fn handle_target_tcp_connection(
             _ = sleep(wait_before_close_time) => {
                 if !with_quit.is_empty() {
                     info!("{} (quit request sending)", with_quit);
-                    match out_channel.send((client_id.clone(), service_code.clone(), [].to_vec(), topic.clone())).await {
+                    match out_channel.send((client_id.clone(), Bytes::new(), service_index)).await {
                         Ok(_) => {},
                         Err(err) => {
                             error_count += 1;
@@ -181,13 +182,13 @@ async fn handle_target_tcp_connection(
 /// Handles UDP transfer between client and target host
 async fn handle_target_udp_transfering(
     client_id: String,
-    settings: Settings,
+    settings: Arc<Settings>,
     stat: Arc<RwLock<Stat>>,
     service_code: String,
     service_name: String,
-    topic: String,
-    mut in_data_channel: mpsc::Receiver<(String, Vec<u8>)>,
-    out_channel: mpsc::Sender<(String, String, Vec<u8>, String)>,
+    service_index: u16,
+    mut in_data_channel: mpsc::Receiver<(String, Bytes)>,
+    out_channel: mpsc::Sender<(String, Bytes, u16)>,
     target_host: IpAddr,
     target_port: u16,
 ) {
@@ -232,7 +233,7 @@ async fn handle_target_udp_transfering(
                             break;
                         }
                         let data = &read_buffer[..n];
-                        match out_channel.send((client_id.clone(), service_code.clone(), data.to_vec(), topic.clone())).await {
+                        match out_channel.send((client_id.clone(), Bytes::from(data.to_vec()), service_index)).await {
                             Ok(_) => {
                                 in_bytes = n;
                             },
@@ -304,7 +305,7 @@ async fn handle_target_udp_transfering(
             },
             _ = sleep(wait_before_close_time) => {
                 if !with_quit.is_empty() {
-                    match out_channel.send((client_id.clone(), service_code.clone(), [].to_vec(), topic.clone())).await {
+                    match out_channel.send((client_id.clone(), Bytes::new(), service_index)).await {
                         Ok(_) => {
                             warn!("{} (quit request sending)", with_quit);
                         },
@@ -339,6 +340,7 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         }
     }
     let mut targets = Vec::new();
+    let mut service_index = 0;
     for (serv_name, addr_map) in settings.tcp_targets.iter() {
         let Some((ip, port)) = addr_map.iter().next() else {
             error!("No target socket found for server {}", serv_name);
@@ -348,11 +350,11 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
             let service_code = code_name(&format!("{}{}", serv_name, client));
             let input_topic = server_data_topic(true, &service_code);
             let client_topic = client_data_topic(true, &service_code);
-            info!("TCP service {} (code: {}) for client {} -> tcp://{}:{}",
-                serv_name, service_code, client, ip, port);
+            info!("TCP service {} (code: {}) for client {} -> tcp://{}:{}", serv_name, service_code, client, ip, port);
             targets.push((
-                serv_name.clone(), service_code.clone(), input_topic, client_topic, ip.clone(), *port
+                serv_name.clone(), service_code.clone(), input_topic, client_topic, ip.clone(), *port, service_index as u16
             ));
+            service_index += 1;
         }
     }
     let mut data_handler = DataHandlerSettings::new();
@@ -361,12 +363,14 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         return;
     }
     let mut service_routing = HashMap::new();
+    let mut service_index_map = HashMap::new();
     let connection_name = format!("main-t-{}", settings.client_name);
-    for (s_name, s_code, topic, out_topic, ip_s, port_s) in targets.iter() {
-        service_routing.entry(topic.clone()).or_insert((s_name.clone(), s_code.clone(), out_topic.clone(), *ip_s, *port_s));
+    for (s_name, s_code, topic, out_topic, ip_s, port_s, index) in targets.iter() {
+        service_routing.entry(topic.clone()).or_insert((index.clone(), s_name.clone(), s_code.clone(), *ip_s, *port_s));
+        service_index_map.entry(index.clone()).or_insert((s_code.clone(), out_topic.clone()));
     }
     let settings = settings.clone();
-    let out_service_routing = service_routing.clone();
+    let out_service_routing = Arc::new(RwLock::new(service_routing));
     let arc_stat = stat.clone();
 
     tasks.spawn(async move {
@@ -378,6 +382,17 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         match client.connect(conn_opts).await {
             Ok(_) => {
                 info!("MQTT client connected");
+                let out_services = out_service_routing.read().await;
+                for topic in out_services.keys() {
+                    match client.subscribe(topic, qos).await {
+                        Ok(_) => {
+                            info!("Subscribed to topic '{}' for connection {}", topic, connection_name);
+                        },
+                        Err(err) => {
+                            error!("Failed to subscribe to topic {}: {}", topic, err);
+                        }
+                    }
+                }
             },
             Err(err) => {
                 error!("MQTT connection error: {}", err);
@@ -385,16 +400,6 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
             }
         }
 
-        for topic in out_service_routing.keys() {
-            match client.subscribe(topic, qos).await {
-                Ok(_) => {
-                    info!("Subscribed to topic '{}' for connection {}", topic, connection_name);
-                },
-                Err(err) => {
-                    error!("Failed to subscribe to topic {}: {}", topic, err);
-                }
-            }
-        }
         let (service_in_channel_size, service_out_channel_size) = settings.channel_size();
         let (data_in_channel, mut data_out_channel) = mpsc::channel(service_in_channel_size);
         // input chunks
@@ -413,6 +418,7 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         let send_delay = settings.collect_message_timeout(false);
         let service_delay = settings.service_delay();
         let chunk_size = settings.chunk_output_size();
+        let arc_settings = Arc::new(settings);
 
         loop {
             if error_count + raw_bytes + msg_bytes > 0 {
@@ -445,20 +451,21 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
                                 if is_new {
                                     info!("New TCP client {} connected to {}", client_id, topic);
                                     let (tx, rx) = mpsc::channel(service_out_channel_size);
-                                    if let Some(item) = out_service_routing.get(topic) {
-                                        let (s_name, s_code, out_topic, ip_s, port_s) = item.clone();
-                                        let l_settings = settings.clone();
+                                    let out_services = out_service_routing.read().await;
+                                    if let Some(item) = out_services.get(topic) {
+                                        let (index_service, s_name, s_code, ip_s, port_s) = item.clone();
                                         let main_tx = data_in_channel.clone();
-                                        let client = client_id.to_string();
                                         let stat = arc_stat.clone();
+                                        let client = client_id.clone();
+                                        let conn_settings = arc_settings.clone();
                                         tokio::spawn(async move {
                                             handle_target_tcp_connection(
                                                 client,
-                                                l_settings,
+                                                conn_settings,
                                                 stat,
                                                 s_code,
                                                 s_name,
-                                                out_topic,
+                                                index_service,
                                                 rx,
                                                 main_tx,
                                                 ip_s,
@@ -510,13 +517,17 @@ pub async fn server_tcp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
                         }
                     }
                 },
-                Some((client_id, service_code, data, cl_topic)) = data_out_channel.recv() => {
-                    let msg = if data.is_empty() {
-                        data_handler.make_quit_message(&service_code, &client_id)
+                Some((client_id, data, service_index)) = data_out_channel.recv() => {
+                    if let Some((service_code, cl_topic)) = service_index_map.get(&service_index) {
+                        let msg = if data.is_empty() {
+                            data_handler.make_quit_message(&service_code, &client_id)
+                        } else {
+                            data_handler.make_data_message(&data, &service_code, &client_id)
+                        };
+                        chunks.add_data(&cl_topic, msg);
                     } else {
-                        data_handler.make_data_message(&data, &service_code, &client_id)
-                    };
-                    chunks.add_data(&cl_topic, msg);
+                        error!("Unknown service index {}", service_index);
+                    }
                 },
             }
         }
@@ -532,6 +543,7 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         }
     }
     let mut targets = Vec::new();
+    let mut service_index = 0;
     for (serv_name, addr_map) in settings.udp_targets.iter() {
         let Some((ip, port)) = addr_map.iter().next() else {
             error!("No target socket found for server {}", serv_name);
@@ -543,8 +555,9 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
             let client_topic = client_data_topic(false, &service_code);
             info!("{} ({} {} {}) -> udp://{}:{}", input_topic, serv_name, service_code, client, ip, port);
             targets.push((
-                serv_name.clone(), service_code.clone(), input_topic, client_topic, ip.clone(), *port
+                serv_name.clone(), service_code.clone(), input_topic, client_topic, ip.clone(), *port, service_index as u16
             ));
+            service_index += 1;
         }
     }
     let mut data_handler = DataHandlerSettings::new();
@@ -553,16 +566,18 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         return;
     }
     let mut service_routing = HashMap::new();
+    let mut service_index_map = HashMap::new();
     let connection_name = format!("main-u-{}", settings.client_name);
-    for (s_name, s_code, topic, out_topic, ip_s, port_s) in targets.iter() {
-        service_routing.entry(topic.clone()).or_insert((s_name.clone(), s_code.clone(), out_topic.clone(), *ip_s, *port_s));
+    for (s_name, s_code, topic, out_topic, ip_s, port_s, index) in targets.iter() {
+        service_routing.entry(topic.clone()).or_insert((index.clone(), s_name.clone(), s_code.clone(), *ip_s, *port_s));
+        service_index_map.entry(index.clone()).or_insert((s_code.clone(), out_topic.clone()));
     }
     if service_routing.len() < 1 {
         info!("No targets for UDP services.");
         return;
     }
     let settings = settings.clone();
-    let out_service_routing = service_routing.clone();
+    let out_service_routing = Arc::new(RwLock::new(service_routing));
     let arc_stat = stat.clone();
 
     tasks.spawn(async move {
@@ -575,21 +590,21 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         match client.connect(conn_opts).await {
             Ok(_) => {
                 info!("MQTT client connected");
+                let out_services = out_service_routing.read().await;
+                for topic in out_services.keys() {
+                    match client.subscribe(topic, qos).await {
+                        Ok(_) => {
+                            info!("Waiting for messages from '{}' connection {}", topic, connection_name);
+                        },
+                        Err(err) => {
+                            error!("Error subscribing to {} in main handler: {}", topic, err);
+                        }
+                    }
+                }
             },
             Err(err) => {
                 error!("MQTT connection error: {}", err);
                 return;
-            }
-        }
-
-        for topic in out_service_routing.keys() {
-            match client.subscribe(topic, qos).await {
-                Ok(_) => {
-                    info!("Waiting for messages from '{}' connection {}", topic, connection_name);
-                },
-                Err(err) => {
-                    error!("Error subscribing to {} in main handler: {}", topic, err);
-                }
             }
         }
         let (service_in_channel_size, service_out_channel_size) = settings.channel_size();
@@ -610,6 +625,7 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
         let send_delay = settings.collect_message_timeout(false);
         let service_delay = settings.service_delay();
         let chunk_size = settings.chunk_output_size();
+        let arc_settings = Arc::new(settings);
 
         loop {
             if error_count + raw_bytes + msg_bytes > 0 {
@@ -642,20 +658,21 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
                                 if is_new {
                                     info!("New UDP client {} connected to {}", client_id, topic);
                                     let (tx, rx) = mpsc::channel(service_out_channel_size);
-                                    if let Some(item) = out_service_routing.get(topic) {
-                                        let (s_name, s_code, out_topic, ip_s, port_s) = item.clone();
-                                        let l_settings = settings.clone();
+                                    let out_services = out_service_routing.read().await;
+                                    if let Some(item) = out_services.get(topic) {
+                                        let (index_service, s_name, s_code, ip_s, port_s) = item.clone();
                                         let main_tx = data_in_channel.clone();
                                         let client = client_id.to_string();
                                         let stat = arc_stat.clone();
+                                        let conn_settings = arc_settings.clone();
                                         tokio::spawn(async move {
                                             handle_target_udp_transfering(
                                                 client,
-                                                l_settings,
+                                                conn_settings,
                                                 stat,
                                                 s_code,
                                                 s_name,
-                                                out_topic,
+                                                index_service,
                                                 rx,
                                                 main_tx,
                                                 ip_s,
@@ -707,13 +724,17 @@ pub async fn server_udp_processing(settings: &Settings, stat: Arc<RwLock<Stat>>,
                         }
                     }
                 },
-                Some((client_id, service_code, data, cl_topic)) = data_out_channel.recv() => {
-                    let msg = if data.is_empty() {
-                        data_handler.make_quit_message(&service_code, &client_id)
+                Some((client_id, data, service_index)) = data_out_channel.recv() => {
+                    if let Some((service_code, cl_topic)) = service_index_map.get(&service_index) {
+                        let msg = if data.is_empty() {
+                            data_handler.make_quit_message(&service_code, &client_id)
+                        } else {
+                            data_handler.make_data_message(&data, &service_code, &client_id)
+                        };
+                        chunks.add_data(&cl_topic, msg);
                     } else {
-                        data_handler.make_data_message(&data, &service_code, &client_id)
-                    };
-                    chunks.add_data(&cl_topic, msg);
+                        error!("Unknown service index {}", service_index);
+                    }
                 },
             }
         }
