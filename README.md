@@ -3,6 +3,10 @@
 This project enables you to create a local server for forwarding both TCP connections and UDP transfers. On the server side, it establishes persistent connections to remote destinations with encryption support. The solution delivers excellent performance and reliability. A similar [project in Python here](https://github.com/unaxfromsibiria/aiomqttbridge) uses MQTT too.
 There is also a project that uses Redis Pub-Sub for traffic transmission with [Rust implementation here](https://github.com/unaxfromsibiria/connect-you-ports)
 
+## The project can be used as a tunnel into the cloud infrastructure for development
+
+![Use case](img/intro.jpg)
+
 You can forward multiple TCP and UDP connections through a message broker, launch several infrastructure services without direct access, and define named enumerations for each service: `TCP_SOCKETS='redis:127.0.0.1:6379;db:127.0.0.1:5432;dev-api:127.0.0.1:8080;rabbit:127.0.0.1:5672'` `UDP_SOCKETS='iperf-udp:0.0.0.0:9092;dns:0.0.0.0:5553'`
 
 On the client side, all these sockets are accessible locally. On the server side, connections are established to the appropriate services based on the target configuration, e.g.: `SERVER_TCP_TARGET='redis:host-in-cloud-1:6379;db:host-in-cloud-2:5432;dev-api:host-in-cloud-3:8080;rabbit:host-in-cloud-4:5672'` and for the UDP sockets: `SERVER_UDP_TARGET='iperf-udp:0.0.0.0:9092;dns:8.8.8.8:53'`

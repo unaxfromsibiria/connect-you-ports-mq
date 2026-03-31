@@ -270,6 +270,29 @@ mod tests {
     }
 
     #[test]
+    fn test_data_encryption_and_open() {
+        let mut handler = DataHandlerSettings::new();
+        let key1 = "b2ff288a7cf97ddcbf913b8bd1e94cf00a40620f6565821e9f7182881c7e113f";
+        let _ = handler.setup(&MockEncryptionData::new(key1));
+        assert!(handler.encryption);
+        let original_data = b"Hello World";
+        let msg1 = handler.make_data_message(original_data, "OP1", "client123");
+        let msg2 = handler.make_data_message(original_data, "OP1", "client123");
+        assert_ne!(msg1.n, msg2.n, "Nonces must be different for different encryption operations");
+        assert_ne!(msg1.d, msg2.d);
+        assert_eq!(msg1.d.len(), msg2.d.len());
+        assert!(msg1.d.len() > 0);
+        let chunk1 = DataChunk { set: vec![msg1.clone()], e: String::new() };
+        let chunk2 = DataChunk { set: vec![msg2.clone()], e: String::new() };
+        let chunk1_1 = handler.load_data_message(&bincode::serialize(&chunk1).unwrap());
+        let chunk2_1 = handler.load_data_message(&bincode::serialize(&chunk2).unwrap());
+        assert_eq!(chunk1_1.set[0].d, original_data);
+        assert_eq!(chunk2_1.set[0].d, original_data);
+        assert!(chunk1_1.set[0].e.is_empty());
+        assert!(chunk2_1.set[0].e.is_empty());
+    }
+
+    #[test]
     fn test_data_chunk_formatting() {
         let mut chunk = DataChunk::new();
         chunk.set.push(DataMsg {
