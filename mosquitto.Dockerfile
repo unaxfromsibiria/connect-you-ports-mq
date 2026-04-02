@@ -17,7 +17,7 @@ RUN echo "listener 1883 0.0.0.0" > /mosquitto/config/mosquitto.conf && \
 
 RUN apk add --no-cache bash
 RUN mkdir -p /mosquitto/config/host/
-RUN touch /mosquitto/config/host/password.txt && chmod 700 /mosquitto/config/host/password.txt
+RUN touch /mosquitto/config/host/password.txt && chmod 777 /mosquitto/config/host/password.txt
 
 RUN echo '#!/bin/bash' >> /opt/make_user.sh && chmod 770 /opt/make_user.sh
 RUN echo 'export NEW_PWD=$(tr -dc A-Za-z0-9 < /dev/urandom | head -c32) && echo "You can use this: $NEW_PWD"' >> /opt/make_user.sh

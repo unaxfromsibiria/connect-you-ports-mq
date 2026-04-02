@@ -8,7 +8,7 @@ example_server:
 	@echo "Edit lines in docker-compose.yml:"
 	cat docker-compose.yml | grep EDIT
 	mkdir -p .mqtt_pass
-	touch .mqtt_pass/password.txt
+	touch .mqtt_pass/password.txt && chmod 777 .mqtt_pass/password.txt
 	@echo "Launch after building containers: make mqttpassword"
 
 example_client:
